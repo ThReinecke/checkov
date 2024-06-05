@@ -1763,7 +1763,7 @@ nav_order: 1
 | 1752 | CKV_YC_24       | resource | yandex_resourcemanager_cloud_iam_member                 | Ensure passport account is not used for assignment. Use service accounts and federated accounts where possible.                                                                                          | Terraform | https://github.com/bridgecrewio/checkov/tree/master/checkov |
 | 1753 | CKV_YC_24       | resource | yandex_resourcemanager_folder_iam_binding               | Ensure passport account is not used for assignment. Use service accounts and federated accounts where possible.                                                                                          | Terraform | https://github.com/bridgecrewio/checkov/tree/master/checkov |
 | 1754 | CKV_YC_24       | resource | yandex_resourcemanager_folder_iam_member                | Ensure passport account is not used for assignment. Use service accounts and federated accounts where possible.                                                                                          | Terraform | https://github.com/bridgecrewio/checkov/tree/master/checkov |
-
+| 1755 | CKV_OKTA_1       | resource | okta_app_signon_policy_rule                            | Ensure 2FA is enabled for an Okta application signon policy rule                                                                              | Terraform | [TwoFASignOnPolicyRule.py](https://github.com/bridgecrewio/checkov/blob/main/checkov/terraform/checks/resource/okta/TwoFASignOnPolicyRule.py) 
 
 ---
 
