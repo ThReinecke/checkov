@@ -1,10 +1,15 @@
-from networkx import DiGraph
+from unittest import mock
+
+import pytest
 
 from checkov.bicep.image_referencer.manager import BicepImageReferencerManager
 from checkov.common.images.image_referencer import Image
+from tests.graph_utils.utils import GRAPH_FRAMEWORKS, set_graph_by_graph_framework, \
+    add_vertices_to_graph_by_graph_framework
 
 
-def test_extract_images_from_resources():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources(graph_framework):
     # given
     resource = {
         "file_path_": "/batch.bicep",
@@ -15,7 +20,7 @@ def test_extract_images_from_resources():
                 "containerConfiguration": {
                     "containerImageNames": ["python:3.9-alpine"],
                     "containerRegistries": {
-                        "password": "myPassword",
+                        "password": "myPassword",  # checkov:skip=CKV_SECRET_6 test secret
                         "registryServer": "myContainerRegistry.azurecr.io",
                         "username": "myUserName",
                     },
@@ -25,11 +30,13 @@ def test_extract_images_from_resources():
         },
         "resource_type": "Microsoft.Batch/batchAccounts/pools",
     }
-    graph = DiGraph()
-    graph.add_node(1, **resource)
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
+
 
     # when
-    images = BicepImageReferencerManager(graph_connector=graph).extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        images = BicepImageReferencerManager(graph_connector=graph).extract_images_from_resources()
 
     # then
     assert images == [

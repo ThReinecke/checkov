@@ -1,14 +1,16 @@
 import os
 from unittest import mock
 
-from networkx import DiGraph
-
+import pytest
 from checkov.common.images.image_referencer import Image
 from checkov.terraform.image_referencer.provider.aws import AwsTerraformProvider
+from tests.graph_utils.utils import GRAPH_FRAMEWORKS, set_graph_by_graph_framework, \
+    add_vertices_to_graph_by_graph_framework
 
 
 @mock.patch.dict(os.environ, {"BC_ROOT_DIR": "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src"})
-def test_extract_images_from_resources_with_external_module():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources_with_external_module(graph_framework):
     # given
     resource = {
         "file_path_": "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_job_definition.batch.tf",
@@ -37,35 +39,34 @@ def test_extract_images_from_resources_with_external_module():
         "module_dependency_num_": "0",
         "id_": "aws_batch_job_definition.batch",
     }
-
     module_resource = {
-            "block_name_": "batch",
-            "block_type_": "module",
-            "file_path_": "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf",
-            "config_": {
-                "batch": {
-                    "__end_line__": 21,
-                    "__resolved__": [
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_compute_environment.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_job_definition.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_job_queue.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_scheduling_policy.pike.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/outputs.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
-                        "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/variables.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]"
-                    ],
-                    "__start_line__": 1,
-                }
-            },
-            "id": "5c440d2a1a5c656290cdf8f98e1d893b1c08f7d7bb7cb93ff97a1884b83c18cc"
-        }
-
-    graph = DiGraph()
-    graph.add_node(1, **resource)
-    graph.add_node(2, **module_resource)
+        "block_name_": "batch",
+        "block_type_": "module",
+        "file_path_": "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf",
+        "config_": {
+            "batch": {
+                "__end_line__": 21,
+                "__resolved__": [
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_compute_environment.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_job_definition.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_job_queue.batch.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/aws_batch_scheduling_policy.pike.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/outputs.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]",
+                    "/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/variables.tf[/tmp/checkov/cshayner/cshayner/terraform-aws-batch/master/src/example/examplea/module.batch.tf#0]"
+                ],
+                "__start_line__": 1,
+            }
+        },
+        "id": "5c440d2a1a5c656290cdf8f98e1d893b1c08f7d7bb7cb93ff97a1884b83c18cc"
+    }
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
+    add_vertices_to_graph_by_graph_framework(graph_framework, module_resource, graph, 2, 'batch', 'module')
 
     # when
-    aws_provider = AwsTerraformProvider(graph_connector=graph)
-    images = aws_provider.extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        aws_provider = AwsTerraformProvider(graph_connector=graph)
+        images = aws_provider.extract_images_from_resources()
 
     # then
     assert images == [
@@ -86,7 +87,8 @@ def test_extract_images_from_resources_with_external_module():
     ]
 
 
-def test_extract_images_from_resources():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources(graph_framework):
     # given
     resource = {
         "file_path_": "/ecs.tf",
@@ -112,12 +114,13 @@ def test_extract_images_from_resources():
         ],
         "resource_type": "aws_ecs_task_definition",
     }
-    graph = DiGraph()
-    graph.add_node(1, **resource)
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
 
     # when
-    aws_provider = AwsTerraformProvider(graph_connector=graph)
-    images = aws_provider.extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        aws_provider = AwsTerraformProvider(graph_connector=graph)
+        images = aws_provider.extract_images_from_resources()
 
     # then
     assert images == [
@@ -138,7 +141,8 @@ def test_extract_images_from_resources():
     ]
 
 
-def test_extract_images_from_resources_with_no_image():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources_with_no_image(graph_framework):
     # given
     resource = {
         "file_path_": "/ecs.tf",
@@ -155,12 +159,13 @@ def test_extract_images_from_resources_with_no_image():
         ],
         "resource_type": "aws_ecs_task_definition",
     }
-    graph = DiGraph()
-    graph.add_node(1, **resource)
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
 
     # when
-    aws_provider = AwsTerraformProvider(graph_connector=graph)
-    images = aws_provider.extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        aws_provider = AwsTerraformProvider(graph_connector=graph)
+        images = aws_provider.extract_images_from_resources()
 
     # then
     assert not images

@@ -1,4 +1,8 @@
+import os
 import unittest
+
+from unittest import mock
+from parameterized import parameterized
 
 from checkov.common.checks.base_check import BaseCheck
 from checkov.common.checks.base_check_registry import BaseCheckRegistry
@@ -19,7 +23,7 @@ class TestCheckTypeNotInSignature(BaseCheck):
                          block_type=block_type)
 
     # noinspection PyMethodOverriding
-    def scan_entity_conf(self, conf):
+    def scan_entity_conf(self, conf, entity_type):
         """
         My documentation
         :param conf:
@@ -32,22 +36,25 @@ class TestCheckDetails(BaseCheck):
     # for pytest not to collect this class as tests
     __test__ = False
 
-    def __init__(self):
+    def __init__(self, fail_check=False):
         name = "Another Example check"
         categories = []
         id = "CKV_T_2"
         supported_entities = ["my_resource_type"]
         block_type = "resource"
+        self.fail_check = fail_check
         super().__init__(name=name, id=id, categories=categories, supported_entities=supported_entities,
                          block_type=block_type)
 
     # noinspection PyMethodOverriding
-    def scan_entity_conf(self, conf):
+    def scan_entity_conf(self, conf, entity_type):
         """
         My documentation
         :param conf:
         :return:
         """
+        if self.fail_check:
+            raise Exception("An error")
         if conf.get("value")[0]:
             self.details.append("This check PASSED...")
             return CheckResult.PASSED
@@ -74,7 +81,7 @@ class TestBaseCheck(unittest.TestCase):
         """)
 
     def test_invalid_signature_is_detected(self):
-        with self.assertRaises(NotImplementedError) as context:
+        with self.assertRaises(TypeError) as context:
             class TestCheckUnknownSignature(BaseCheck):
 
                 def __init__(self):
@@ -86,15 +93,10 @@ class TestBaseCheck(unittest.TestCase):
                     super().__init__(name=name, id=id, categories=categories, supported_entities=supported_entities,
                                      block_type=block_type)
 
-                # noinspection PyMethodOverriding
-                def scan_entity_conf(self, conf, some_unexpected_parameter_123):
-                    return CheckResult.PASSED
-        self.assertIsInstance(context.exception, NotImplementedError)
-        self.assertEqual(
-            "The signature ((\'self\', \'conf\', \'some_unexpected_parameter_123\'), None, None) for scan_entity_conf "
-            "is not supported.",
-            context.exception.args[0]
-        )
+            TestCheckUnknownSignature()
+
+        self.assertIsInstance(context.exception, TypeError)
+        self.assertRegex(context.exception.args[0], r"Can't instantiate abstract class TestCheckUnknownSignature")
 
     def test_details_reinitializing_after_execution(self):
         check = TestCheckDetails()
@@ -107,6 +109,20 @@ class TestBaseCheck(unittest.TestCase):
         self.assertEqual(CheckResult.FAILED, result["result"])
         self.assertEqual(1, len(check.details))
         self.assertIn("This check FAILED...", check.details)
+
+    @parameterized.expand([
+        ("WARNING",),
+        ("ERROR",)
+    ])
+    def test_check_fail_log_level_error(self, log_level):
+        with self.assertLogs(level=log_level) as log, mock.patch.dict(os.environ,
+                                                                      {'CHECKOV_CHECK_FAIL_LEVEL': log_level}, clear=True):
+            check = TestCheckDetails(fail_check=True)
+            self.assertEqual(0, len(check.details))
+            try:
+                check.run("test.tf", {"value": ["True"]}, "my_resource", "resource", {})
+            except Exception:
+                self.assertEqual(len(log.output), 1)
 
 
 if __name__ == '__main__':

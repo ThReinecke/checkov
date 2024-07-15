@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Any, List, Optional, Type, TYPE_CHECKING, cast
+from typing import Dict, Any, List, Optional, Type, TYPE_CHECKING
 
 from checkov.common.checks_infra.solvers import (
     EqualsAttributeSolver,
@@ -185,8 +185,13 @@ class GraphCheckParser(BaseGraphCheckParser):
         return True
 
     def parse_raw_check(self, raw_check: Dict[str, Dict[str, Any]], **kwargs: Any) -> BaseGraphCheck:
+        providers = self._get_check_providers(raw_check)
         policy_definition = raw_check.get("definition", {})
+<<<<<<< HEAD
         check = self._parse_raw_check(policy_definition, kwargs.get("resources_types"), raw_check)
+=======
+        check = self._parse_raw_check(policy_definition, kwargs.get("resources_types"), providers)
+>>>>>>> 1aac43d8dd42bfcc9248f5117b4af8fa431b388d
         check.id = raw_check.get("metadata", {}).get("id", "")
         check.name = raw_check.get("metadata", {}).get("name", "")
         check.category = raw_check.get("metadata", {}).get("category", "")
@@ -198,7 +203,21 @@ class GraphCheckParser(BaseGraphCheckParser):
 
         return check
 
+<<<<<<< HEAD
     def _parse_raw_check(self, raw_check: Dict[str, Any], resources_types: Optional[List[str]], json_check: Dict[str, Any]) -> BaseGraphCheck:
+=======
+    @staticmethod
+    def _get_check_providers(raw_check: Dict[str, Any]) -> List[str]:
+        providers = raw_check.get("scope", {}).get("provider", [""])
+        if isinstance(providers, list):
+            return providers
+        elif isinstance(providers, str):
+            return [providers]
+        else:
+            return [""]
+
+    def _parse_raw_check(self, raw_check: Dict[str, Any], resources_types: Optional[List[str]], providers: Optional[List[str]]) -> BaseGraphCheck:
+>>>>>>> 1aac43d8dd42bfcc9248f5117b4af8fa431b388d
         check = BaseGraphCheck()
         complex_operator = get_complex_operator(raw_check)
         if complex_operator:
@@ -212,7 +231,11 @@ class GraphCheckParser(BaseGraphCheckParser):
                 sub_solvers = [sub_solvers]
 
             for sub_solver in sub_solvers:
+<<<<<<< HEAD
                 check.sub_checks.append(self._parse_raw_check(sub_solver, resources_types,  json_check))
+=======
+                check.sub_checks.append(self._parse_raw_check(sub_solver, resources_types, providers))
+>>>>>>> 1aac43d8dd42bfcc9248f5117b4af8fa431b388d
             resources_types_of_sub_solvers = [
                 force_list(q.resource_types) for q in check.sub_checks if q is not None and q.resource_types is not None
             ]
@@ -228,6 +251,7 @@ class GraphCheckParser(BaseGraphCheckParser):
                     or (isinstance(resource_type, list) and resource_type[0].lower() == "all")
             ):
                 check.resource_types = resources_types or []
+<<<<<<< HEAD
             elif "provider" in resource_type:
                 provider = json_check.get("scope", {}).get("provider", "")
                 provider_type = ""
@@ -237,6 +261,14 @@ class GraphCheckParser(BaseGraphCheckParser):
                     provider_type = provider[0].lower()
                 check.resource_types.append(f"provider.{provider_type}")
 
+=======
+            elif "provider" in resource_type and providers:
+                for provider in providers:
+                    check.resource_types.append(f"provider.{provider.lower()}")
+            elif isinstance(resource_type, str):
+                #  for the case the "resource_types" value is a string, which can result in a silent exception
+                check.resource_types = [resource_type]
+>>>>>>> 1aac43d8dd42bfcc9248f5117b4af8fa431b388d
             else:
                 check.resource_types = resource_type
 

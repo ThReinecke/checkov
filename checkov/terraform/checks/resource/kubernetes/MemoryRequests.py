@@ -17,6 +17,8 @@ class MemoryRequests(BaseResourceCheck):
             return CheckResult.FAILED
         spec = conf['spec'][0]
         evaluated_keys_path = "spec"
+        if not spec:
+            return CheckResult.UNKNOWN
 
         template = spec.get("template")
         if template and isinstance(template, list):
@@ -30,13 +32,13 @@ class MemoryRequests(BaseResourceCheck):
         if containers is None:
             return CheckResult.UNKNOWN
         for idx, container in enumerate(containers):
-            if type(container) != dict:
+            if not isinstance(container, dict):
                 return CheckResult.UNKNOWN
             if container.get("resources"):
                 resources = container.get("resources")[0]
                 if resources.get('requests'):
                     requests = resources.get('requests')[0]
-                    if isinstance(requests, dict) and requests.get('memory'):
+                    if isinstance(requests, dict) and requests.get('memory'):  # nosec  # false positive
                         return CheckResult.PASSED
                     self.evaluated_keys = [f'{evaluated_keys_path}/[0]/container/[{idx}]/resources/[0]/requests']
                     return CheckResult.FAILED

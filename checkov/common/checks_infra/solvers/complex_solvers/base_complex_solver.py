@@ -3,11 +3,13 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import List, Any, Tuple, Dict, TYPE_CHECKING, Optional
 
+from networkx import DiGraph
+
 from checkov.common.graph.checks_infra.enums import SolverType
 from checkov.common.graph.checks_infra.solvers.base_solver import BaseSolver
 
 if TYPE_CHECKING:
-    from networkx import DiGraph
+    from checkov.common.typing import LibraryGraph
 
 
 class BaseComplexSolver(BaseSolver):
@@ -30,11 +32,25 @@ class BaseComplexSolver(BaseSolver):
     def get_operation(self, vertex: Dict[str, Any]) -> Optional[bool]:
         raise NotImplementedError()
 
-    def run(self, graph_connector: DiGraph) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def run(self, graph_connector: LibraryGraph) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         passed_vertices = []
         failed_vertices = []
         unknown_vertices = []
-        for _, data in graph_connector.nodes(data=True):
+
+        if isinstance(graph_connector, DiGraph):
+            for _, data in graph_connector.nodes(data=True):
+                if self.resource_type_pred(data, self.resource_types):
+                    result = self.get_operation(data)
+                    if result is None:
+                        unknown_vertices.append(data)
+                    elif result:
+                        passed_vertices.append(data)
+                    else:
+                        failed_vertices.append(data)
+            return passed_vertices, failed_vertices, unknown_vertices
+
+        # isinstance(graph_connector, PyDiGraph):
+        for _, data in graph_connector.nodes():
             if self.resource_type_pred(data, self.resource_types):
                 result = self.get_operation(data)
                 if result is None:

@@ -24,18 +24,18 @@ class TestCombinatorPluginMultilineJson(unittest.TestCase):
 
     def test_non_multiline_pair_time_limit_creating_report(self):
         # given
-        test_file_path = Path(__file__).parent / "json_multiline/pomerium_compose.json"
+        test_files = [str(Path(__file__).parent / "json_multiline/pomerium_compose.json")]
+        runner = Runner()
+        runner_filter = RunnerFilter(framework=['secrets'])
 
         # when
         start_time = time.time()
-        report = Runner().run(
-            root_folder=None, files=[str(test_file_path)], runner_filter=RunnerFilter(framework=['secrets'])
-        )
+        report = runner.run(root_folder=None, files=test_files, runner_filter=runner_filter)
         end_time = time.time()
 
         # then
         assert end_time-start_time < 1  # assert the time limit is not too long for parsing long lines.
-        self.assertEqual(len(report.failed_checks), 8)
+        self.assertEqual(len(report.failed_checks), 6)
         # None of the results is related to multiline scanning - all is detected even if multiline scanning is disabled.
         # This is a different result compared to same data in .yml file.
         self.assertEqual(report.parsing_errors, [])

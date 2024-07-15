@@ -23,7 +23,7 @@ Use the `--soft-fail` (`-s`) option to have Checkov always return a `0` exit cod
 
 Use the `--soft-fail-on` option to pass one or more check IDs (including wildcards) and / or severity levels to specify which failed checks will result in a soft fail result. Any failed check that does not match a criteria in the soft-fail list will result in an error exit code (`1`).
 
-For soft fails, a a failed check *matches* the threshold if its severity is less than or equal to the soft fail severity. If you specify more than one severity for soft fail, then the highest severity will be used as the threshold.
+For soft fails, a failed check *matches* the threshold if its severity is less than or equal to the soft fail severity. If you specify more than one severity for soft fail, then the highest severity will be used as the threshold.
 
 ### --hard-fail-on
 
@@ -65,7 +65,7 @@ The table below shows how different values of `--soft-fail`, `--soft-fail-on`, a
 
 # Platform enforcement rules
 
-Checkov can download [enforcement rules](https://docs.bridgecrew.io/docs/enforcement) that you configure in the Bridgecrew or Prisma Cloud platform. This allows you to centralize the failure and check threshold configurations, instead of defining them in each pipeline.
+Checkov can download [enforcement rules](https://docs.prismacloud.io/en/enterprise-edition/content-collections/application-security/risk-management/monitor-and-manage-code-build/enforcement) that you configure in the Prisma Cloud platform. This allows you to centralize the failure and check threshold configurations, instead of defining them in each pipeline.
 
 To use enforcement rules, use the `--use-enforcement-rules` flag along with a platform API key.
 

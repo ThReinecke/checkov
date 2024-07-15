@@ -1,43 +1,38 @@
 from __future__ import annotations
 
-import os
+import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
+import checkov.common.parsers.yaml.loader as loader
+from checkov.common.bridgecrew.check_type import CheckType
+from checkov.common.graph.graph_builder.consts import GraphSource
 from checkov.common.output.report import Report
-from checkov.github_actions.image_referencer.manager import GithubActionsImageReferencerManager
+from checkov.github_actions.checks.registry import registry
 from checkov.github_actions.graph_builder.local_graph import GitHubActionsLocalGraph
 from checkov.github_actions.utils import is_schema_valid, is_workflow_file
-
 from checkov.runner_filter import RunnerFilter
-
-import checkov.common.parsers.yaml.loader as loader
-from checkov.common.images.image_referencer import Image, ImageReferencerMixin
-from checkov.common.bridgecrew.check_type import CheckType
-from checkov.common.util.consts import START_LINE, END_LINE
-from checkov.common.util.type_forcers import force_dict
-from checkov.github_actions.checks.registry import registry
 from checkov.yaml_doc.runner import Runner as YamlRunner
 
 if TYPE_CHECKING:
     from checkov.common.checks.base_check_registry import BaseCheckRegistry
-    from checkov.common.graph.db_connectors.networkx.networkx_db_connector import NetworkxConnector
+    from checkov.common.typing import LibraryGraphConnector
     from checkov.common.runners.graph_builder.local_graph import ObjectLocalGraph
     from checkov.common.runners.graph_manager import ObjectGraphManager
-    from networkx import DiGraph
 
 
-class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any]]]"], YamlRunner):
+class Runner(YamlRunner):
     check_type = CheckType.GITHUB_ACTIONS  # noqa: CCE003  # a static attribute
 
     def __init__(
         self,
-        db_connector: NetworkxConnector | None = None,
-        source: str = "GitHubActions",
+        db_connector: LibraryGraphConnector | None = None,
+        source: str = GraphSource.GITHUB_ACTIONS,
         graph_class: type[ObjectLocalGraph] = GitHubActionsLocalGraph,
         graph_manager: ObjectGraphManager | None = None,
+        external_registries: dict[str, Any] | None = None
     ) -> None:
         super().__init__(
             db_connector=db_connector,
@@ -52,16 +47,21 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
     def import_registry(self) -> BaseCheckRegistry:
         return registry
 
-    def _parse_file(
-        self, f: str, file_content: str | None = None
-    ) -> tuple[dict[str, Any] | list[dict[str, Any]], list[tuple[int, str]]] | None:
+    @staticmethod
+    def _parse_file(f: str, file_content: str | None = None) -> \
+            tuple[dict[str, Any] | list[dict[str, Any]], list[tuple[int, str]]] | None:
         if is_workflow_file(f):
-            entity_schema: tuple[dict[str, Any] | list[dict[str, Any]], list[tuple[int, str]]] | None = super()._parse_file(f)
+            entity_schema: tuple[dict[str, Any] | list[dict[str, Any]], list[tuple[int, str]]] | None = YamlRunner._parse_file(f)
+            if not entity_schema:
+                # Indicates that there was an exception/error while trying to read the file,
+                # hence no need to check the schema validity.
+                return None
+
             if not file_content:
                 with open(f, 'r') as f_obj:
                     file_content = f_obj.read()
-            if entity_schema and \
-                    is_schema_valid(yaml.load(file_content, Loader=loader.SafeLineLoaderGhaSchema)):  # nosec
+
+            if all(map(is_schema_valid, yaml.load_all(file_content, Loader=loader.SafeLineLoaderGhaSchema))):  # nosec
                 return entity_schema
         return None
 
@@ -69,18 +69,34 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
         return [".github"]
 
     def get_resource(self, file_path: str, key: str, supported_entities: Iterable[str],
-                     definitions: dict[str, Any] | None = None) -> str:
-        if not definitions:
-            return key
+                     start_line: int = -1, end_line: int = -1, graph_resource: bool = False) -> str:
+        """
+        supported resources for GHA:
+            jobs
+            jobs.*.steps[]
+            permissions
+            on
 
-        potential_job_name = key.split('.')[1]
-        if potential_job_name != '*':
-            new_key = f'jobs.{potential_job_name}'
-        else:
-            start_line, end_line = self.get_start_and_end_lines(key)
-            job_name = Runner.resolve_job_name(definitions, start_line, end_line)
-            step_name = Runner.resolve_step_name(definitions["jobs"][job_name], start_line, end_line)
-            new_key = f'jobs.{job_name}.steps.{step_name}'
+        """
+        if len(list(supported_entities)) > 1:
+            logging.debug("order of entities might cause extracting the wrong key for resource_id")
+        new_key = key
+        definition = self.definitions.get(file_path, {})
+        if not definition or not isinstance(definition, dict):
+            return new_key
+        if 'on' in supported_entities:
+            workflow_name = definition.get('name', "")
+            new_key = f"on({workflow_name})" if workflow_name else "on"
+        elif 'jobs' in supported_entities or graph_resource and 'steps' in supported_entities:
+            job_name = self.resolve_sub_name(definition, start_line, end_line, tag='jobs')
+            new_key = f"jobs({job_name})" if job_name else "jobs"
+
+            if (graph_resource and supported_entities == 'steps') or \
+                    (not graph_resource and 'jobs.*.steps[]' in supported_entities and key.split('.')[1] == '*'):
+                step_name = self.resolve_step_name(definition['jobs'].get(job_name), start_line, end_line)
+                new_key = f'jobs({job_name}).steps{step_name}'
+        elif 'permissions' in supported_entities:
+            new_key = 'permissions'
         return new_key
 
     def run(
@@ -94,57 +110,15 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
         runner_filter = runner_filter or RunnerFilter()
         report = super().run(root_folder=root_folder, external_checks_dir=external_checks_dir,
                              files=files, runner_filter=runner_filter, collect_skip_comments=collect_skip_comments)
-        if runner_filter.run_image_referencer:
-            if files:
-                # 'root_folder' shouldn't be empty to remove the whole path later and only leave the shortened form
-                root_folder = os.path.split(os.path.commonprefix(files))[0]
-
-            image_report = self.check_container_image_references(
-                graph_connector=None,
-                root_path=root_folder,
-                runner_filter=runner_filter,
-                definitions=self.definitions,
-                definitions_raw=self.definitions_raw
-            )
-
-            if image_report:
-                if isinstance(report, list):
-                    return [*report, image_report]
-                return [report, image_report]
-
         return report
 
-    def extract_images(
-        self, graph_connector: DiGraph | None = None,
-            definitions: dict[str, dict[str, Any] | list[dict[str, Any]]] | None = None,
-            definitions_raw: dict[str, list[tuple[int, str]]] | None = None
-    ) -> list[Image]:
-        images: list[Image] = []
-        if not definitions or not definitions_raw:
-            return images
-
-        for file, config in definitions.items():
-            _config = force_dict(config) or {}
-            manager = GithubActionsImageReferencerManager(workflow_config=_config, file_path=file,
-                                                          workflow_line_numbers=definitions_raw[file])
-            images.extend(manager.extract_images_from_workflow())
-
-        return images
-
-    @staticmethod
-    def resolve_job_name(definition: dict[str, Any], start_line: int, end_line: int) -> str:
-        for key, job in definition.get('jobs', {}).items():
-            if key in [START_LINE, END_LINE]:
-                continue
-            if job[START_LINE] <= start_line <= end_line <= job[END_LINE]:
-                return str(key)
-        return ""
-
-    @staticmethod
-    def resolve_step_name(job_definition: dict[str, Any], start_line: int, end_line: int) -> str:
-        for idx, step in enumerate([step for step in job_definition.get('steps') or [] if step]):
-            if step[START_LINE] <= start_line <= end_line <= step[END_LINE]:
-                name = step.get('name')
-                return f"{idx + 1}[{name}]" if name else str(idx + 1)
-
-        return ""
+    def populate_metadata_dict(self) -> None:
+        if isinstance(self.definitions, dict):
+            # populate gha metadata dict
+            for key, definition in self.definitions.items():
+                if isinstance(definition, dict):
+                    workflow_name = definition.get('name', '')
+                    triggers = self._get_triggers(definition)
+                    jobs = self._get_jobs(definition)
+                    self.map_file_path_to_gha_metadata_dict[key] = {"triggers": triggers,
+                                                                    "workflow_name": workflow_name, "jobs": jobs}

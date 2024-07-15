@@ -21,6 +21,8 @@ class CPULimits(BaseResourceCheck):
             return CheckResult.FAILED
         spec = conf['spec'][0]
         evaluated_keys_path = "spec"
+        if not spec:
+            return CheckResult.UNKNOWN
 
         template = spec.get("template")
         if template and isinstance(template, list):
@@ -34,7 +36,7 @@ class CPULimits(BaseResourceCheck):
         if not containers:
             return CheckResult.UNKNOWN
         for idx, container in enumerate(containers):
-            if type(container) != dict:
+            if not isinstance(container, dict):
                 return CheckResult.UNKNOWN
             if container.get("resources"):
                 resources = container.get("resources")[0]

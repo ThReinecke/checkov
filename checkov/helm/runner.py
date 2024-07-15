@@ -12,35 +12,39 @@ import yaml
 
 from checkov.common.bridgecrew.check_type import CheckType
 from checkov.common.graph.checks_infra.registry import BaseRegistry
-from checkov.common.graph.db_connectors.networkx.networkx_db_connector import NetworkxConnector
+from checkov.common.typing import LibraryGraphConnector
+from checkov.common.graph.graph_builder.consts import GraphSource
+from checkov.common.images.image_referencer import fix_related_resource_ids, Image
 from checkov.common.output.report import Report
 from checkov.common.parallelizer.parallel_runner import parallel_runner
 from checkov.common.runners.base_runner import BaseRunner, filter_ignored_paths
+from checkov.helm.image_referencer.manager import HelmImageReferencerManager
 from checkov.helm.registry import registry
 from checkov.kubernetes.graph_builder.local_graph import KubernetesLocalGraph
-from checkov.kubernetes.runner import Runner as k8_runner, handle_timeout
+from checkov.kubernetes.runner import Runner as k8_runner, handle_timeout, _KubernetesContext, _KubernetesDefinitions
 from checkov.runner_filter import RunnerFilter
 import signal
 
 if TYPE_CHECKING:
     from checkov.kubernetes.graph_manager import KubernetesGraphManager
+    from networkx import DiGraph
 
 
 class K8sHelmRunner(k8_runner):
     def __init__(
         self,
         graph_class: Type[KubernetesLocalGraph] = KubernetesLocalGraph,
-        db_connector: NetworkxConnector | None = None,
-        source: str = "Kubernetes",
+        db_connector: LibraryGraphConnector | None = None,
+        source: str = GraphSource.KUBERNETES,
         graph_manager: KubernetesGraphManager | None = None,
         external_registries: list[BaseRegistry] | None = None
     ) -> None:
-        db_connector = db_connector or NetworkxConnector()
-
         self.check_type = CheckType.HELM
         super().__init__(graph_class, db_connector, source, graph_manager, external_registries)
         self.chart_dir_and_meta: list[tuple[str, dict[str, Any]]] = []
         self.pbar.turn_off_progress_bar()
+        self.original_root_dir = ''
+        self.tmp_root_dir = ''
 
     def run(
         self,
@@ -62,12 +66,22 @@ class K8sHelmRunner(k8_runner):
             chart_results = super().run(root_folder, external_checks_dir=external_checks_dir, runner_filter=runner_filter)
 
             if isinstance(chart_results, list):
-                helm_report = next(chart_result for chart_result in chart_results if chart_result.check_type == self.check_type)
+                helm_report = next(
+                    chart_result for chart_result in chart_results if chart_result.check_type == self.check_type
+                )
+                sca_image_report = next(
+                    chart_result for chart_result in chart_results if chart_result.check_type == CheckType.SCA_IMAGE
+                )
             else:
                 helm_report = chart_results
+                sca_image_report = None
 
             if root_folder is not None:
-                fix_report_paths(helm_report, root_folder)
+                fix_report_paths(report=helm_report, tmp_dir=root_folder)
+                if self.original_root_dir:
+                    fix_related_resource_ids(report=sca_image_report, tmp_dir=self.original_root_dir)
+                else:
+                    fix_related_resource_ids(report=sca_image_report, tmp_dir=root_folder)
 
             return chart_results
         except Exception:
@@ -82,8 +96,33 @@ class K8sHelmRunner(k8_runner):
             # TODO: Export helm dependencies for the chart we've extracted in chart_dependencies
             return report
 
+    def get_image_report(self, root_folder: str | None, runner_filter: RunnerFilter) -> Report | None:
+        if not self.graph_manager:
+            return None
+        return self.check_container_image_references(
+            graph_connector=self.graph_manager.get_reader_endpoint(),
+            root_path=self.original_root_dir,
+            runner_filter=runner_filter,
+        )
 
-class Runner(BaseRunner["KubernetesGraphManager"]):
+    def extract_images(
+            self,
+            graph_connector: DiGraph | None = None,
+            definitions: None = None,
+            definitions_raw: dict[str, list[tuple[int, str]]] | None = None
+    ) -> list[Image]:
+        if not graph_connector:
+            # should not happen
+            return []
+
+        manager = HelmImageReferencerManager(graph_connector=graph_connector, original_root_dir=self.original_root_dir,
+                                             temp_root_dir=self.tmp_root_dir)
+        images = manager.extract_images_from_resources()
+
+        return images
+
+
+class Runner(BaseRunner[_KubernetesDefinitions, _KubernetesContext, "KubernetesGraphManager"]):
     check_type: str = CheckType.HELM  # noqa: CCE003  # a static attribute
     helm_command = 'helm'  # noqa: CCE003  # a static attribute
     system_deps = True  # noqa: CCE003  # a static attribute
@@ -99,14 +138,14 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
         return self.target_folder_path
 
     @staticmethod
-    def parse_helm_chart_details(chart_path: str) -> dict[str, Any] | None:
+    def parse_helm_chart_details(chart_path: str) -> tuple[str, dict[str, Any] | None]:
         with open(f"{chart_path}/Chart.yaml", 'r') as chartyaml:
             try:
                 chart_meta: dict[str, Any] = yaml.safe_load(chartyaml)
             except (yaml.YAMLError, UnicodeDecodeError):
                 logging.info(f"Failed to load chart metadata from {chart_path}/Chart.yaml.", exc_info=True)
-                return None
-        return chart_meta
+                return chart_path, None
+        return chart_path, chart_meta
 
     def check_system_deps(self) -> str | None:
         # Ensure local system dependancies are available and of the correct version.
@@ -195,10 +234,21 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
         return target_dir
 
     @staticmethod
+    def get_binary_output_from_directory(chart_dir: str, target_dir: str, helm_command: str,
+                                         runner_filter: RunnerFilter, timeout: int = 3600) \
+            -> tuple[bytes, tuple[str, dict[str, Any]]] | tuple[None, None]:
+        _, chart_meta = Runner.parse_helm_chart_details(chart_dir)
+        chart_item = (chart_dir, chart_meta or {})
+        return Runner.get_binary_output(chart_item, target_dir, helm_command, runner_filter, timeout)
+
+    @staticmethod
     def get_binary_output(
         chart_item: tuple[str, dict[str, Any]], target_dir: str, helm_command: str, runner_filter: RunnerFilter, timeout: int = 3600
     ) -> tuple[bytes, tuple[str, dict[str, Any]]] | tuple[None, None]:
         (chart_dir, chart_meta) = chart_item
+        if not isinstance(chart_meta, dict):
+            logging.error(f"invalid chart meta {chart_meta}")
+            return None, None
         chart_name = chart_meta.get('name', chart_meta.get('Name'))
         chart_version = chart_meta.get('version', chart_meta.get('Version'))
         logging.info(
@@ -238,7 +288,7 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
                 signal.alarm(0)
             if e:
                 logging.warning(
-                    f"Error processing helm chart {chart_name} at dir: {chart_dir}. Working dir: {target_dir}. Error details: {str(e, 'utf-8')}")
+                    f"Failed processing helm chart {chart_name} at dir: {chart_dir}. Working dir: {target_dir}. Failure details: {str(e, 'utf-8')}")
                 return None, None
             logging.debug(
                 f"Ran helm command to template chart output. Chart: {chart_name}. dir: {target_dir}. Output: {str(o, 'utf-8')}. Errors: {str(e, 'utf-8')}")
@@ -290,8 +340,7 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
         root_folder: str | None, files: list[str] | None, runner_filter: RunnerFilter
     ) -> list[tuple[str, dict[str, Any]]]:
         chart_directories = find_chart_directories(root_folder, files, runner_filter.excluded_paths)
-        chart_dir_and_meta = list(parallel_runner.run_function(
-            lambda cd: (cd, Runner.parse_helm_chart_details(cd)), chart_directories))
+        chart_dir_and_meta = parallel_runner.run_function(func=Runner.parse_helm_chart_details, items=chart_directories)
         # remove parsing failures
         cleaned_chart_dir_and_meta = [(chart_dir, meta) for chart_dir, meta in chart_dir_and_meta if meta]
         return cleaned_chart_dir_and_meta
@@ -312,19 +361,12 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
         self.runner_filter = runner_filter
         self.target_folder_path = tempfile.mkdtemp()
         chart_dir_and_meta = Runner._get_chart_dir_and_meta(self.root_folder, files, runner_filter)
+        chart_items = [
+            (chart_item, self.root_folder, self.target_folder_path, self.helm_command, runner_filter)
+            for chart_item in chart_dir_and_meta
+        ]
 
-        list(
-            parallel_runner.run_function(
-                lambda cd: Runner._convert_chart_to_k8s(
-                    chart_item=cd,
-                    root_folder=self.root_folder,
-                    target_folder_path=self.target_folder_path,
-                    helm_command=self.helm_command,
-                    runner_filter=runner_filter,
-                ),
-                chart_dir_and_meta,
-            )
-        )
+        list(parallel_runner.run_function(func=Runner._convert_chart_to_k8s, items=chart_items))
         return Runner._get_processed_chart_dir_and_meta(chart_dir_and_meta, self.root_folder)
 
     def run(
@@ -341,7 +383,11 @@ class Runner(BaseRunner["KubernetesGraphManager"]):
 
         k8s_runner = K8sHelmRunner()
         k8s_runner.chart_dir_and_meta = self.convert_helm_to_k8s(root_folder, files, runner_filter)
-        return k8s_runner.run(self.get_k8s_target_folder_path(), external_checks_dir=external_checks_dir, runner_filter=runner_filter)
+        k8s_runner.original_root_dir = str(root_folder)
+        k8s_runner.tmp_root_dir = self.get_k8s_target_folder_path()
+        report = k8s_runner.run(self.get_k8s_target_folder_path(), external_checks_dir=external_checks_dir, runner_filter=runner_filter)
+        self.graph_manager = k8s_runner.graph_manager
+        return report
 
 
 def fix_report_paths(report: Report, tmp_dir: str) -> None:

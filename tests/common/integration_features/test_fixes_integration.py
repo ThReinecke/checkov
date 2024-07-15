@@ -21,11 +21,16 @@ class TestFixesIntegration(unittest.TestCase):
         instance = BcPlatformIntegration()
         instance.skip_fixes = False
         instance.platform_integration_configured = True
+        instance.on_prem = False
 
         fixes_integration = FixesIntegration(instance)
 
         self.assertTrue(fixes_integration.is_valid())
 
+        instance.on_prem = True
+        self.assertFalse(fixes_integration.is_valid())
+
+        instance.on_prem = False
         instance.skip_fixes = True
         self.assertFalse(fixes_integration.is_valid())
 
@@ -109,6 +114,7 @@ class TestFixesIntegration(unittest.TestCase):
 
     def tearDown(self) -> None:
         metadata_integration.check_metadata = self._old_check_metadata
+        metadata_integration.bc_to_ckv_id_mapping = {}
 
 
 def mock_fixes_response(check_type: str, filename: str, file_contents: str, failed_checks: Iterable[Record]

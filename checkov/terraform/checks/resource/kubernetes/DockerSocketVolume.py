@@ -27,10 +27,13 @@ class DockerSocketVolume(BaseResourceCheck):
             return CheckResult.FAILED
 
         spec = conf['spec'][0]
+        if not spec:
+            return CheckResult.UNKNOWN
+
         if "volume" in spec and spec.get("volume"):
             volumes = spec.get("volume")
             for idx, v in enumerate(volumes):
-                if v.get("host_path"):
+                if isinstance(v, dict) and v.get("host_path"):
                     if "path" in v["host_path"][0]:
                         if v["host_path"][0]["path"] == ["/var/run/docker.sock"]:
                             self.evaluated_keys = [f"spec/volume/{idx}/host_path/[0]/path"]
@@ -42,10 +45,9 @@ class DockerSocketVolume(BaseResourceCheck):
                 if "volume" in temp_spec and temp_spec.get("volume"):
                     volumes = temp_spec.get("volume")
                     for idx, v in enumerate(volumes):
-                        if v.get("host_path"):
+                        if isinstance(v, dict) and v.get("host_path"):
                             if "path" in v["host_path"][0]:
-                                path = v["host_path"][0]["path"]
-                                if path == ["/var/run/docker.sock"]:
+                                if v["host_path"][0]["path"] == ["/var/run/docker.sock"]:
                                     self.evaluated_keys = [f"spec/template/spec/volume/{idx}/host_path/[0]/path"]
                                     return CheckResult.FAILED
 

@@ -18,10 +18,12 @@ class SuspectCurlInScript(BaseCircleCIPipelinesCheck):
         )
 
     def scan_conf(self, conf: dict[str, Any]) -> tuple[CheckResult, dict[str, Any]]:
+        if not isinstance(conf, dict):
+            return CheckResult.UNKNOWN, conf
         if "run" not in conf:
             return CheckResult.PASSED, conf
         run = conf.get("run", "")
-        if type(run) == dict:
+        if isinstance(run, dict):
             run = run.get("command", "")
         if "curl" in run:
             badstuff = ['curl', 'POST']

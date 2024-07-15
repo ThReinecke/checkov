@@ -12,17 +12,29 @@ import asyncio
 from typing import Any, TYPE_CHECKING, cast, Optional, overload
 
 from urllib3.response import HTTPResponse
+from urllib3.util import parse_url
 
-from checkov.common.bridgecrew.bc_source import SourceType
+from checkov.common.resource_code_logger_filter import add_resource_code_filter_to_logger
 from checkov.common.util.consts import DEV_API_GET_HEADERS, DEV_API_POST_HEADERS, PRISMA_API_GET_HEADERS, \
     PRISMA_PLATFORM, BRIDGECREW_PLATFORM
 from checkov.common.util.data_structures_utils import merge_dicts
+from checkov.common.util.type_forcers import force_int, force_float
 from checkov.version import version as checkov_version
 
 if TYPE_CHECKING:
+    from checkov.common.bridgecrew.bc_source import SourceType
     from requests import Response
 
+# https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+REQUEST_CONNECT_TIMEOUT = force_float(os.getenv("CHECKOV_REQUEST_CONNECT_TIMEOUT")) or 3.1
+REQUEST_READ_TIMEOUT = force_int(os.getenv("CHECKOV_REQUEST_READ_TIMEOUT")) or 30
+DEFAULT_TIMEOUT = (REQUEST_CONNECT_TIMEOUT, REQUEST_READ_TIMEOUT)
+
+# https://urllib3.readthedocs.io/en/stable/user-guide.html#retrying-requests
+REQUEST_RETRIES = force_int(os.getenv("CHECKOV_REQUEST_RETRIES")) or 3
+
 logger = logging.getLogger(__name__)
+add_resource_code_filter_to_logger(logger)
 
 
 @overload
@@ -112,6 +124,19 @@ def get_prisma_get_headers() -> dict[str, str]:
     return merge_dicts(PRISMA_API_GET_HEADERS, get_user_agent_header())
 
 
+def valid_url(url: str | None) -> bool:
+    """Checks for a valid URL, otherwise returns False"""
+
+    if not url:
+        return False
+
+    try:
+        result = parse_url(url)
+        return all([result.scheme, result.netloc])
+    except Exception:
+        return False
+
+
 def request_wrapper(
         method: str,
         url: str,
@@ -119,7 +144,8 @@ def request_wrapper(
         data: Any | None = None,
         json: dict[str, Any] | None = None,
         should_call_raise_for_status: bool = False,
-        params: dict[str, Any] | None = None
+        params: dict[str, Any] | None = None,
+        log_json_body: bool = True
 ) -> Response:
     # using of "retry" mechanism for 'requests.request' due to unpredictable 'ConnectionError' and 'HttpError'
     # instances that appears from time to time.
@@ -136,12 +162,20 @@ def request_wrapper(
     for i in range(request_max_tries):
         try:
             headers["X-Request-Id"] = str(uuid.uuid4())
-            response = requests.request(method, url, headers=headers, data=data, json=json, params=params)
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                data=data,
+                json=json,
+                params=params,
+                timeout=DEFAULT_TIMEOUT,
+            )
             if should_call_raise_for_status:
                 response.raise_for_status()
             return response
         except requests.exceptions.ConnectionError as connection_error:
-            logging.error(f"Connection error on request {method}:{url},\ndata:\n{data}\njson:{json}\nheaders:{headers}")
+            logging.error(f"Connection error on request {method}:{url},\ndata:\n{data}\njson:{json if log_json_body else 'Redacted'}\nheaders:{headers}")
             if i != request_max_tries - 1:
                 sleep_secs = sleep_between_request_tries * (i + 1)
                 logging.info(f"retrying attempt number {i + 2} in {sleep_secs} seconds")
@@ -151,15 +185,18 @@ def request_wrapper(
             logging.exception("request_wrapper connection error")
             raise connection_error
         except requests.exceptions.HTTPError as http_error:
-            status_code = http_error.response.status_code
-            logging.error(f"HTTP error on request {method}:{url},\ndata:\n{data}\njson:{json}\nheaders:{headers}")
+            status_code = 520  # set unknown error, if http_error.response is None
+            if http_error.response is not None:
+                status_code = http_error.response.status_code
+
+            logging.error(f"HTTP error on request {method}:{url},\ndata:\n{data}\njson:{json if log_json_body else 'Redacted'}\nheaders:{headers}")
             if (status_code >= 500 or status_code == 403) and i != request_max_tries - 1:
                 sleep_secs = sleep_between_request_tries * (i + 1)
                 logging.info(f"retrying attempt number {i + 2} in {sleep_secs} seconds")
                 time.sleep(sleep_secs)
                 continue
 
-            logging.exception("request_wrapper http error")
+            logging.error("request_wrapper http error", exc_info=True)
             raise http_error
     else:
         raise Exception("Unexpected behavior: the method \'request_wrapper\' should be terminated inside the above for-"
@@ -174,16 +211,10 @@ async def aiohttp_client_session_wrapper(
     request_max_tries = int(os.getenv('REQUEST_MAX_TRIES', 3))
     sleep_between_request_tries = float(os.getenv('SLEEP_BETWEEN_REQUEST_TRIES', 1))
 
-    try:  # TODO: test again, when Python 3.11 is out
-        import aiodns  # type: ignore[import]  # noqa: F401
-        resolver: "aiohttp.abc.AbstractResolver" = aiohttp.AsyncResolver()
-    except ImportError:
-        resolver = aiohttp.ThreadedResolver()
-
     # adding retry mechanism for avoiding the next repeated unexpected issues:
     # 1. Gateway Timeout from the server
     # 2. ClientOSError
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=resolver)) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=aiohttp.AsyncResolver())) as session:
         for i in range(request_max_tries):
             logging.info(
                 f"[http_utils](aiohttp_client_session_wrapper) reporting attempt {i + 1} out of {request_max_tries}")

@@ -1,27 +1,21 @@
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
+from checkov.common.bridgecrew.check_type import CheckType
 from checkov.common.output.report import Report
 from checkov.common.util.type_forcers import force_dict
-from checkov.gitlab_ci.common.resource_id_utils import generate_resource_key_recursive
-
-from checkov.runner_filter import RunnerFilter
-
-from checkov.common.images.image_referencer import Image, ImageReferencerMixin
-from checkov.common.bridgecrew.check_type import CheckType
 from checkov.gitlab_ci.checks.registry import registry
-from checkov.gitlab_ci.image_referencer.manager import GitlabCiImageReferencerManager
+from checkov.gitlab_ci.common.resource_id_utils import generate_resource_key_recursive
+from checkov.runner_filter import RunnerFilter
 from checkov.yaml_doc.runner import Runner as YamlRunner
 
 if TYPE_CHECKING:
     from checkov.common.checks.base_check_registry import BaseCheckRegistry
     from collections.abc import Iterable
-    from networkx import DiGraph
 
 
-class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any]]]"], YamlRunner):
+class Runner(YamlRunner):
     check_type = CheckType.GITLAB_CI  # noqa: CCE003  # a static attribute
 
     def require_external_checks(self) -> bool:
@@ -30,15 +24,17 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
     def import_registry(self) -> BaseCheckRegistry:
         return registry
 
+    @staticmethod
     def _parse_file(
-        self, f: str, file_content: str | None = None
+        f: str, file_content: str | None = None
     ) -> tuple[dict[str, Any] | list[dict[str, Any]], list[tuple[int, str]]] | None:
-        if self.is_workflow_file(f):
-            return super()._parse_file(f=f, file_content=file_content)
+        if Runner.is_workflow_file(f):
+            return YamlRunner._parse_file(f=f, file_content=file_content)
 
         return None
 
-    def is_workflow_file(self, file_path: str) -> bool:
+    @staticmethod
+    def is_workflow_file(file_path: str) -> bool:
         """
         :return: True if the file mentioned is in the gitlab workflow name .gitlab-ci.yml. Otherwise: False
         """
@@ -48,8 +44,7 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
         return (".gitlab-ci.yml", ".gitlab-ci.yaml")
 
     def get_resource(self, file_path: str, key: str, supported_entities: Iterable[str],
-                     definitions: dict[str, Any] | None = None) -> str:
-        start_line, end_line = self.get_start_and_end_lines(key)
+                     start_line: int = -1, end_line: int = -1, graph_resource: bool = False) -> str:
         file_config = force_dict(self.definitions[file_path])
         if not file_config:
             return key
@@ -68,38 +63,4 @@ class Runner(ImageReferencerMixin["dict[str, dict[str, Any] | list[dict[str, Any
         runner_filter = runner_filter or RunnerFilter()
         report = super().run(root_folder=root_folder, external_checks_dir=external_checks_dir,
                              files=files, runner_filter=runner_filter, collect_skip_comments=collect_skip_comments)
-        if runner_filter.run_image_referencer:
-            if files:
-                # 'root_folder' shouldn't be empty to remove the whole path later and only leave the shortened form
-                root_folder = os.path.split(os.path.commonprefix(files))[0]
-
-            image_report = self.check_container_image_references(
-                graph_connector=None,
-                root_path=root_folder,
-                runner_filter=runner_filter,
-                definitions=self.definitions
-            )
-
-            if image_report:
-                return [report, image_report]  # type:ignore[list-item]  # report can only be of type Report, not a list
-
         return report
-
-    def extract_images(
-        self,
-        graph_connector: DiGraph | None = None,
-        definitions: dict[str, dict[str, Any] | list[dict[str, Any]]] | None = None,
-        definitions_raw: dict[str, list[tuple[int, str]]] | None = None
-    ) -> list[Image]:
-        images: list[Image] = []
-        if not definitions:
-            return images
-
-        for file, config in definitions.items():
-            if isinstance(config, list):
-                continue
-
-            manager = GitlabCiImageReferencerManager(workflow_config=config, file_path=file)
-            images.extend(manager.extract_images_from_workflow())
-
-        return images

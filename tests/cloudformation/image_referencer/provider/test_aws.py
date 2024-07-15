@@ -1,10 +1,16 @@
-from networkx import DiGraph
+
+from unittest import mock
+
+import pytest
 
 from checkov.cloudformation.image_referencer.provider.aws import AwsCloudFormationProvider
 from checkov.common.images.image_referencer import Image
+from tests.graph_utils.utils import GRAPH_FRAMEWORKS, set_graph_by_graph_framework, \
+    add_vertices_to_graph_by_graph_framework
 
 
-def test_extract_images_from_resources():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources(graph_framework):
     # given
     resource = {
         "file_path_": "/ecs.yaml",
@@ -31,12 +37,13 @@ def test_extract_images_from_resources():
         ],
         "resource_type": "AWS::ECS::TaskDefinition",
     }
-    graph = DiGraph()
-    graph.add_node(1, **resource)
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
 
     # when
-    aws_provider = AwsCloudFormationProvider(graph_connector=graph)
-    images = aws_provider.extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        aws_provider = AwsCloudFormationProvider(graph_connector=graph)
+        images = aws_provider.extract_images_from_resources()
 
     # then
     assert images == [
@@ -51,7 +58,8 @@ def test_extract_images_from_resources():
     ]
 
 
-def test_extract_images_from_resources_with_no_image():
+@pytest.mark.parametrize("graph_framework", GRAPH_FRAMEWORKS)
+def test_extract_images_from_resources_with_no_image(graph_framework):
     # given
     resource = {
         "file_path_": "/ecs.yaml",
@@ -68,12 +76,14 @@ def test_extract_images_from_resources_with_no_image():
         ],
         "resource_type": "AWS::ECS::TaskDefinition",
     }
-    graph = DiGraph()
-    graph.add_node(1, **resource)
+    graph = set_graph_by_graph_framework(graph_framework)
+    add_vertices_to_graph_by_graph_framework(graph_framework, resource, graph)
 
     # when
-    aws_provider = AwsCloudFormationProvider(graph_connector=graph)
-    images = aws_provider.extract_images_from_resources()
+    with mock.patch.dict('os.environ', {'CHECKOV_GRAPH_FRAMEWORK': graph_framework}):
+        aws_provider = AwsCloudFormationProvider(graph_connector=graph)
+        images = aws_provider.extract_images_from_resources()
 
     # then
     assert not images
+

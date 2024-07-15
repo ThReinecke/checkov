@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from requests import JSONDecodeError
+
 from checkov.common.bridgecrew.platform_integration import bc_integration
 from checkov.common.util.http_utils import request_wrapper
 
@@ -32,30 +34,37 @@ class Scanner:
         return self.poll_scan_result()
 
     def run_scan(self) -> bool:
-        logging.info("Start to scan package files.")
+        try:
+            logging.info("Start to scan package files.")
 
-        request_body = {
-            "branch": "",
-            "commit": "",
-            "path": bc_integration.repo_path,
-            "repoId": bc_integration.repo_id,
-            "id": bc_integration.timestamp,
-            "repositoryId": ""
-        }
+            request_body = {
+                "branch": "",
+                "commit": "",
+                "path": bc_integration.repo_path,
+                "repoId": bc_integration.repo_id,
+                "id": bc_integration.timestamp,
+                "repositoryId": ""
+            }
 
-        response = request_wrapper(
-            "POST", self.bc_cli_scan_api_url,
-            headers=bc_integration.get_default_headers("POST"),
-            json=request_body,
-            should_call_raise_for_status=True
-        )
+            response = request_wrapper(
+                "POST", self.bc_cli_scan_api_url,
+                headers=bc_integration.get_default_headers("POST"),
+                json=request_body,
+                should_call_raise_for_status=True
+            )
 
-        response_json = response.json()
+            response_json = response.json()
 
-        if not response_json["startedSuccessfully"]:
-            logging.info("Failed to run package scanning.")
+            if not response_json["startedSuccessfully"]:
+                logging.info("Failed to run package scanning.")
+                return False
+            return True
+        except Exception:
+            logging.debug(
+                "[sca_package_2] - Unexpected failure happened during package scanning.\n"
+                "the scanning is terminating. details are below.\n"
+                "please try again. if it is repeated, please report.", exc_info=True)
             return False
-        return True
 
     def poll_scan_result(self) -> dict[str, Any]:
         total_sleeping_time = 0
@@ -66,24 +75,30 @@ class Scanner:
                 headers=bc_integration.get_default_headers("GET"),
                 params={"repoId": bc_integration.repo_id}
             )
-            response_json = response.json()
+
+            try:
+                response_json = response.json()
+            except JSONDecodeError:
+                logging.debug(f"Unexpected response from {self.bc_cli_scan_api_url}: {response.text}")
+                return {}
+
             current_state = response_json.get("status", "")
             if not current_state:
                 logging.error("Failed to poll scan results.")
                 return {}
 
             if current_state == "COMPLETED":
-                logging.info(response_json)
+                logging.debug(response_json)
                 report_url = response_json['reportUrl']
                 report_response = request_wrapper("GET", report_url, headers={'Accept': 'application/json'})
                 return report_response.json()  # type: ignore
 
             if current_state == "FAILED":
-                logging.error(response_json)
+                logging.debug(response_json)
                 return {}
 
             time.sleep(SLEEP_DURATION)
             total_sleeping_time += SLEEP_DURATION
 
-        logging.info(f"Timeout, slept for {total_sleeping_time}")
+        logging.debug(f"Timeout, slept for {total_sleeping_time}")
         return {}

@@ -18,6 +18,8 @@ class AllowedCapabilitiesSysAdmin(BaseResourceCheck):
     def scan_resource_conf(self, conf) -> CheckResult:
         spec = conf.get('spec', [None])[0]
         evaluated_keys_path = "spec"
+        if not spec:
+            return CheckResult.UNKNOWN
 
         template = spec.get("template")
         if template and isinstance(template, list):
@@ -31,13 +33,13 @@ class AllowedCapabilitiesSysAdmin(BaseResourceCheck):
             containers = spec.get("container")
 
             for idx, container in enumerate(containers):
-                if type(container) != dict:
+                if not isinstance(container, dict):
                     return CheckResult.UNKNOWN
                 if container.get("security_context") and isinstance(container.get("security_context"), list):
                     context = container.get("security_context")[0]
                     if context.get("capabilities") and isinstance(context.get("capabilities"), list):
                         capabilities = context.get("capabilities")[0]
-                        if capabilities.get("add") and isinstance(capabilities.get("add"), list):
+                        if isinstance(capabilities, dict) and capabilities.get("add") and isinstance(capabilities.get("add"), list):
                             add = capabilities.get("add")[0]
                             if "SYS_ADMIN" in add:
                                 self.evaluated_keys = [f'{evaluated_keys_path}/[0]/container/[{idx}]/'

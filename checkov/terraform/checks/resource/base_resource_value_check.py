@@ -1,15 +1,19 @@
+import logging
 from abc import abstractmethod
 from collections.abc import Iterable
 from typing import List, Dict, Any
 
-import dpath.util
+import dpath
 import re
+
 from checkov.terraform.checks.resource.base_resource_check import BaseResourceCheck
 from checkov.common.models.enums import CheckResult, CheckCategories
 from checkov.common.models.consts import ANY_VALUE
 from checkov.common.util.type_forcers import force_list
 from checkov.terraform.graph_builder.utils import get_referenced_vertices_in_value
 from checkov.terraform.parser_functions import handle_dynamic_values
+
+ARRAY_INDEX_PATTERN = re.compile(r"^\[?\d+]?$")
 
 
 class BaseResourceValueCheck(BaseResourceCheck):
@@ -31,7 +35,7 @@ class BaseResourceValueCheck(BaseResourceCheck):
         :param path: valid JSONPath of an attribute
         :return: List of named attributes with respect to the input JSONPath order
         """
-        return [x for x in path.split("/") if not re.search(re.compile(r"^\[?\d+]?$"), x)]
+        return [x for x in path.split("/") if not re.search(ARRAY_INDEX_PATTERN, x)]
 
     @staticmethod
     def _is_nesting_key(inspected_attributes: List[str], key: List[str]) -> bool:
@@ -61,6 +65,9 @@ class BaseResourceValueCheck(BaseResourceCheck):
                 # If the tested attribute is variable-dependant, then result is UNKNOWN
                 return CheckResult.UNKNOWN
             if value in expected_values:
+                return CheckResult.PASSED
+            if not isinstance(value, str) and str(value) in expected_values:
+                logging.debug(f"Check {self.id} is set to pass even though the type of value {value} is not str (it is {type(value)}), while {str(value)} is an expected value")
                 return CheckResult.PASSED
             if get_referenced_vertices_in_value(value=value, aliases={}, resources_types=[]):
                 # we don't provide resources_types as we want to stay provider agnostic

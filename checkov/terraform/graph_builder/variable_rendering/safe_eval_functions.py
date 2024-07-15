@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import itertools
 import logging
 import re
@@ -7,6 +9,8 @@ from math import ceil, floor, log
 from typing import Union, Any, Dict, Callable, List, Optional
 
 from checkov.terraform.parser_functions import tonumber, FUNCTION_FAILED, create_map, tobool, tostring
+
+TIME_DELTA_PATTERN = re.compile(r"(\d*\.*\d+)")
 
 """
 This file contains a custom implementation of the builtin `eval` function.
@@ -139,7 +143,7 @@ def timeadd(input_str: str, time_delta: str) -> str:
         adding = False
         time_delta = time_delta[1:]
     # Split out into each of the deltas
-    deltas = re.split(r'(\d*\.*\d+)', time_delta)
+    deltas = re.split(TIME_DELTA_PATTERN, time_delta)
     # Needed to strip the leading empty element
     deltas = list(filter(None, deltas))
     while len(deltas) > 0:
@@ -161,7 +165,7 @@ def timeadd(input_str: str, time_delta: str) -> str:
             delta = timedelta(microseconds=(amount / 1000))
 
         dt = update_datetime(dt, delta, adding)
-        
+
     return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
@@ -255,8 +259,28 @@ def formatdate(format_str: str, input_str: str) -> str:
     return dt.strftime(processed_format_str)
 
 
+def terraform_try(*args: Any) -> Any:
+    """
+    From terraform docs:
+        "try evaluates all of its argument expressions in turn and returns the result of the first one that does not
+        produce any errors."
+    """
+    for arg in args:
+        try:
+            return evaluate(arg) if isinstance(arg, str) else arg
+        except Exception as e:
+            logging.warning(f"Error in evaluate_try of argument {arg} - {e}")
+            continue
+    raise Exception(f"No argument can be evaluated for try of {args}")
+
+
 SAFE_EVAL_FUNCTIONS: List[str] = []
 SAFE_EVAL_DICT = dict([(k, locals().get(k, None)) for k in SAFE_EVAL_FUNCTIONS])
+
+
+# type conversion functions
+TRY_STR_REPLACEMENT = "__terraform_try__"
+SAFE_EVAL_DICT[TRY_STR_REPLACEMENT] = terraform_try
 
 # math functions
 SAFE_EVAL_DICT["abs"] = abs
@@ -293,7 +317,7 @@ SAFE_EVAL_DICT["upper"] = lambda input_str: input_str.upper()
 SAFE_EVAL_DICT["chunklist"] = lambda lst, chunk_size: [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]
 SAFE_EVAL_DICT["coalesce"] = coalesce
 SAFE_EVAL_DICT["coalescelist"] = coalesce_list
-SAFE_EVAL_DICT["compact"] = lambda lst: list(filter(lambda l: l != "", lst))
+SAFE_EVAL_DICT["compact"] = lambda lst: list(filter(lambda value: value != "", lst))
 SAFE_EVAL_DICT["concat"] = lambda *lists: list(itertools.chain(*lists))
 SAFE_EVAL_DICT["contains"] = lambda lst, value: value in lst
 SAFE_EVAL_DICT["distinct"] = lambda lst: list(dict.fromkeys(lst))
@@ -310,6 +334,7 @@ SAFE_EVAL_DICT["merge"] = merge
 # SAFE_EVAL_DICT['range']
 SAFE_EVAL_DICT["reverse"] = reverse
 SAFE_EVAL_DICT["sort"] = sort
+SAFE_EVAL_DICT["zipmap"] = lambda *lists: dict(zip(*lists))  # noqa: B905
 
 
 # type conversion
@@ -333,6 +358,15 @@ def evaluate(input_str: str) -> Any:
     if "__" in input_str:
         logging.debug(f"got a substring with double underscore, which is not allowed. origin string: {input_str}")
         return input_str
+    if input_str == "...":
+        # don't create an Ellipsis object
+        return input_str
+    if input_str.startswith("try"):
+        # As `try` is a saved word in python, we can't override it like other functions as `eval` won't accept it.
+        # Instead, we are manually replacing this string with our own custom string, so we can pass it to `eval`.
+
+        # Don't use str.replace to make sure we replace just the first occurrence
+        input_str = f"{TRY_STR_REPLACEMENT}{input_str[3:]}"
     evaluated = eval(input_str, {"__builtins__": None}, SAFE_EVAL_DICT)  # nosec
     return evaluated if not isinstance(evaluated, str) else remove_unicode_null(evaluated)
 

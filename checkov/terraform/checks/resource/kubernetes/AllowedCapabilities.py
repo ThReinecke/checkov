@@ -20,6 +20,8 @@ class AllowedCapabilities(BaseResourceCheck):
     def scan_resource_conf(self, conf) -> CheckResult:
         spec = conf.get('spec', [None])[0]
         evaluated_keys_path = "spec"
+        if not spec:
+            return CheckResult.UNKNOWN
 
         template = spec.get("template")
         if template and isinstance(template, list):
@@ -33,13 +35,13 @@ class AllowedCapabilities(BaseResourceCheck):
             containers = spec.get("container")
 
             for idx, container in enumerate(containers):
-                if type(container) != dict:
+                if not isinstance(container, dict):
                     return CheckResult.UNKNOWN
                 if container.get("security_context"):
                     context = container.get("security_context")[0]
                     if context.get("capabilities"):
                         capabilities = context.get("capabilities")[0]
-                        if capabilities.get("add"):
+                        if isinstance(capabilities, dict) and capabilities.get("add"):
                             add = capabilities.get("add")[0]
                             if add:
                                 self.evaluated_keys = [f'{evaluated_keys_path}/[0]/container/[{idx}]/'

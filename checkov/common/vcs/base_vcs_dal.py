@@ -10,7 +10,7 @@ from typing import Any
 import urllib3
 
 from checkov.common.util.data_structures_utils import merge_dicts
-from checkov.common.util.http_utils import get_user_agent_header
+from checkov.common.util.http_utils import get_user_agent_header, REQUEST_CONNECT_TIMEOUT, REQUEST_READ_TIMEOUT, REQUEST_RETRIES
 
 
 class BaseVCSDAL:
@@ -21,12 +21,16 @@ class BaseVCSDAL:
         self.current_repository = ""
         self.current_branch = ""
         self.repo_owner = ""
+        self.org = ""
         self.default_branch_cache: dict[str, Any] = {}
 
         self.request_lib_http = None
         self._organization_security = None
+        self.org_complementary_metadata: dict[str, Any] = {}
+        self.repo_complementary_metadata: dict[str, Any] = {}
         self.http: urllib3.PoolManager | None = None
-        self.setup_http_manager(ca_certificate=os.getenv('BC_CA_BUNDLE', None))
+        self.http_timeout = urllib3.Timeout(connect=REQUEST_CONNECT_TIMEOUT, read=REQUEST_READ_TIMEOUT)
+        self.http_retry = urllib3.Retry(REQUEST_RETRIES, redirect=3)
         self.discover()
         self.setup_conf_dir()
 
@@ -48,18 +52,32 @@ class BaseVCSDAL:
             os.environ['REQUESTS_CA_BUNDLE'] = ca_certificate
             try:
                 parsed_url = urllib3.util.parse_url(os.environ['https_proxy'])
-                self.http = urllib3.ProxyManager(os.environ['https_proxy'], cert_reqs='REQUIRED',
-                                                 ca_certs=ca_certificate,
-                                                 proxy_headers=urllib3.make_headers(proxy_basic_auth=parsed_url.auth))  # type:ignore[no-untyped-call]
+                self.http = urllib3.ProxyManager(
+                    os.environ['https_proxy'],
+                    cert_reqs='REQUIRED',
+                    ca_certs=ca_certificate,
+                    proxy_headers=urllib3.make_headers(proxy_basic_auth=parsed_url.auth),  # type:ignore[no-untyped-call]
+                    timeout=self.http_timeout,
+                    retries=self.http_retry,
+                )
             except KeyError:
-                self.http = urllib3.PoolManager(cert_reqs='REQUIRED', ca_certs=ca_certificate)
+                self.http = urllib3.PoolManager(
+                    cert_reqs='REQUIRED',
+                    ca_certs=ca_certificate,
+                    timeout=self.http_timeout,
+                    retries=self.http_retry,
+                )
         else:
             try:
                 parsed_url = urllib3.util.parse_url(os.environ['https_proxy'])
-                self.http = urllib3.ProxyManager(os.environ['https_proxy'],
-                                                 proxy_headers=urllib3.make_headers(proxy_basic_auth=parsed_url.auth))  # type:ignore[no-untyped-call]
+                self.http = urllib3.ProxyManager(
+                    os.environ['https_proxy'],
+                    proxy_headers=urllib3.make_headers(proxy_basic_auth=parsed_url.auth),  # type:ignore[no-untyped-call]
+                    timeout=self.http_timeout,
+                    retries=self.http_retry,
+                )
             except KeyError:
-                self.http = urllib3.PoolManager()
+                self.http = urllib3.PoolManager(timeout=self.http_timeout, retries=self.http_retry)
 
     def _request(self, endpoint: str, allowed_status_codes: list[int]) -> dict[str, Any] | None:
         if allowed_status_codes is None:
@@ -69,6 +87,7 @@ class BaseVCSDAL:
         url_endpoint = f"{self.api_url}/{endpoint}"
         try:
             headers = self._headers()
+            self.setup_http_manager(ca_certificate=os.getenv('BC_CA_BUNDLE', None))
             if self.http:
                 request = self.http.request("GET", url_endpoint, headers=headers)  # type:ignore[no-untyped-call]
                 if request.status in allowed_status_codes:
@@ -95,6 +114,7 @@ class BaseVCSDAL:
 
         body = json.dumps({'query': query, 'variables': variables})
         try:
+            self.setup_http_manager(ca_certificate=os.getenv('BC_CA_BUNDLE', None))
             if self.http:
                 request = self.http.request("POST", self.graphql_api_url, body=body, headers=headers)  # type:ignore[no-untyped-call]
                 if request.status == 200:
@@ -109,7 +129,7 @@ class BaseVCSDAL:
             logging.debug(f"Query failed {query}", exc_info=True)
 
     @staticmethod
-    def persist(path: str | Path, conf: dict[str, Any]) -> None:
+    def persist(path: str | Path, conf: dict[str, Any] | list[dict[str, Any]]) -> None:
         BaseVCSDAL.ensure_dir(path)
         with open(path, "w+", encoding='utf-8') as f:
             logging.debug(f"Persisting to {path}")

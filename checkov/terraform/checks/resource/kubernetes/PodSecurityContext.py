@@ -6,7 +6,7 @@ class PodSecurityContext(BaseResourceCheck):
 
     def __init__(self):
         # CIS-1.5 5.7.3
-        name = "Apply security context to your pods and containers"
+        name = "Apply security context to your pods, deployments and daemon_sets"
         # Security context can be set at pod or container level.
         id = "CKV_K8S_29"
 
@@ -21,11 +21,14 @@ class PodSecurityContext(BaseResourceCheck):
             self.evaluated_keys = [""]
             return CheckResult.FAILED
         spec = conf['spec'][0]
+        if not spec:
+            return CheckResult.UNKNOWN
+
         if spec.get("container"):
             containers = spec.get("container")
 
             for idx, container in enumerate(containers):
-                if type(container) != dict:
+                if not isinstance(container, dict):
                     return CheckResult.UNKNOWN
 
                 if not container.get("security_context"):
@@ -41,7 +44,7 @@ class PodSecurityContext(BaseResourceCheck):
                     containers = temp_spec.get("container")
 
                     for idx, container in enumerate(containers):
-                        if type(container) != dict:
+                        if not isinstance(container, dict):
                             return CheckResult.UNKNOWN
 
                         if not container.get("security_context"):

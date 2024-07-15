@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from copy import deepcopy
-from typing import Union, Dict, Any, List
+from typing import Union, Dict, Any, List, cast
 
 from checkov.common.graph.graph_builder.graph_components.attribute_names import CustomAttributes
 from checkov.common.graph.graph_builder.utils import calculate_hash, join_trimmed_strings
 from checkov.common.graph.graph_builder.variable_rendering.breadcrumb_metadata import BreadcrumbMetadata
-from checkov.terraform.graph_builder.graph_components.block_types import BlockType
+from checkov.common.util.data_structures_utils import pickle_deepcopy
 
 
 class Block:
@@ -23,6 +22,7 @@ class Block:
         "source",
         "has_dynamic_block",
         "dynamic_attributes",
+        "foreach_attrs"
     )
 
     def __init__(
@@ -35,7 +35,7 @@ class Block:
             id: str = "",
             source: str = "",
             has_dynamic_block: bool = False,
-            dynamic_attributes: dict[str, Any] | None = None,
+            dynamic_attributes: dict[str, Any] | None = None
     ) -> None:
         """
             :param name: unique name given to the block, for example
@@ -45,7 +45,7 @@ class Block:
             :param attributes: dictionary of the block's original attributes in the origin file
         """
         self.name = name
-        self.config = deepcopy(config)
+        self.config = pickle_deepcopy(config)
         self.path = path
         self.block_type = block_type
         self.attributes = attributes
@@ -84,10 +84,6 @@ class Block:
         base_attributes = self.get_base_attributes()
         self.get_origin_attributes(base_attributes)
 
-        if hasattr(self, "module_dependency") and hasattr(self, "module_dependency_num"):
-            base_attributes[CustomAttributes.MODULE_DEPENDENCY] = self.module_dependency
-            base_attributes[CustomAttributes.MODULE_DEPENDENCY_NUM] = self.module_dependency_num
-
         if self.changed_attributes:
             # add changed attributes only for calculating the hash
             base_attributes["changed_attributes"] = sorted(self.changed_attributes.keys())
@@ -98,13 +94,6 @@ class Block:
 
         if add_hash:
             base_attributes[CustomAttributes.HASH] = calculate_hash(base_attributes)
-
-        if self.block_type == BlockType.DATA:
-            base_attributes[CustomAttributes.RESOURCE_TYPE] = f'data.{self.id.split(".")[0]}'
-
-        if self.block_type == BlockType.MODULE:
-            # since module names are user defined we are just setting 'module' as resource type for easier searching
-            base_attributes[CustomAttributes.RESOURCE_TYPE] = "module"
 
         if "changed_attributes" in base_attributes:
             # removed changed attributes if it was added previously for calculating hash.
@@ -130,15 +119,15 @@ class Block:
 
     def get_hash(self) -> str:
         attributes_dict = self.get_attribute_dict()
-        return attributes_dict.get(CustomAttributes.HASH, "")
+        return cast("str", attributes_dict.get(CustomAttributes.HASH, ""))
 
     def update_attribute(
         self,
         attribute_key: str,
         attribute_value: Any,
-        change_origin_id: int,
+        change_origin_id: int | None,
         previous_breadcrumbs: list[BreadcrumbMetadata],
-        attribute_at_dest: str,
+        attribute_at_dest: str | None,
         transform_step: bool = False,
     ) -> None:
         self.update_inner_attribute(
@@ -147,7 +136,10 @@ class Block:
             value_to_update=attribute_value
         )
 
-        if self._should_add_previous_breadcrumbs(change_origin_id, previous_breadcrumbs, attribute_at_dest):
+        if (
+            self._should_add_previous_breadcrumbs(change_origin_id, previous_breadcrumbs, attribute_at_dest)
+            and change_origin_id is not None
+        ):
             previous_breadcrumbs.append(BreadcrumbMetadata(change_origin_id, attribute_at_dest))
 
         # update the numbered attributes, if the new value is a list
@@ -234,7 +226,7 @@ class Block:
     def get_export_data(self) -> Dict[str, Union[bool, str]]:
         return {"type": self.block_type, "name": self.name, "path": self.path}
 
-    def get_base_attributes(self) -> Dict[str, Union[str, List[str], Dict[str, Any]]]:
+    def get_base_attributes(self) -> Dict[str, Any]:
         return {
             CustomAttributes.BLOCK_NAME: self.name,
             CustomAttributes.BLOCK_TYPE: self.block_type,
